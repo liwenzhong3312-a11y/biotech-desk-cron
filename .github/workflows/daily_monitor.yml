@@ -8,6 +8,9 @@ on:
     - cron: '30 12 * * 1-5'
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 concurrency:
   group: biotech-desk-stateless-runner
   cancel-in-progress: false
@@ -25,15 +28,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - name: Run stateless cloud monitor (Pull -> Update -> Sync)
         env:
           IBKR_FLEX_TOKEN: ${{ secrets.IBKR_FLEX_TOKEN }}
           IBKR_FLEX_QUERY_ID: ${{ secrets.IBKR_FLEX_QUERY_ID }}
-          FIREBASE_REFRESH_TOKEN: ${{ secrets.FIREBASE_REFRESH_TOKEN }}
+          FIREBASE_OAUTH_JSON: ${{ secrets.FIREBASE_OAUTH_JSON }}
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
         run: python daily_monitor.py --pull-cloud --sync-cloud --no-html
