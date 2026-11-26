@@ -1,0 +1,39 @@
+name: Biotech Desk Stateless Cloud Runner
+
+on:
+  schedule:
+    # 北京时间周二至周六 08:30（美股收盘清算完、IBKR Flex 报表生成后自动更新持仓/成交/行情/期权/SEC/临床）
+    - cron: '30 0 * * 2-6'
+    # 北京时间周一至周五 20:30（美股盘前扫描 SEC、IR 与临床变更）
+    - cron: '30 12 * * 1-5'
+  workflow_dispatch:
+
+concurrency:
+  group: biotech-desk-stateless-runner
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout stateless runner
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run stateless cloud monitor (Pull -> Update -> Sync)
+        env:
+          IBKR_FLEX_TOKEN: ${{ secrets.IBKR_FLEX_TOKEN }}
+          IBKR_FLEX_QUERY_ID: ${{ secrets.IBKR_FLEX_QUERY_ID }}
+          FIREBASE_REFRESH_TOKEN: ${{ secrets.FIREBASE_REFRESH_TOKEN }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+        run: python daily_monitor.py --pull-cloud --sync-cloud --no-html
