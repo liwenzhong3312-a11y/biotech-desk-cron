@@ -419,6 +419,26 @@ def _append_pos_alert(t_doc, date_str, sym, old_sh, new_sh):
     })
 
 
+def compute_ib_avg_costs(fills):
+    """按 IBKR 持仓页口径计算每个标的的「移动加权平均成本（含佣金）」：买入加权并摊入佣金，卖出不改变均价，清仓后归零。"""
+    out = {}
+    for sym in sorted({x.get("sym") for x in fills if x.get("sym")}):
+        sh, avg = 0.0, 0.0
+        for x in sorted((f for f in fills if f.get("sym") == sym), key=lambda f: str(f.get("time", ""))):
+            q = float(x.get("qty") or 0)
+            px = float(x.get("px") or 0)
+            cm = float(x.get("comm") or 0)
+            if x.get("side") == "BUY":
+                avg = (sh * avg + q * px + cm) / (sh + q) if (sh + q) > 0 else 0.0
+                sh += q
+            else:
+                sh -= q
+                if abs(sh) < 1e-6:
+                    sh, avg = 0.0, 0.0
+        out[sym] = {"shares": sh, "avg": avg}
+    return out
+
+
 def run_ibkr_sync(xml_file=None, dry_run=False, rebuild_html=True, sync_cloud=False, proxy=None):
     """执行 IBKR Flex 同步主流程，返回结果摘要字典。"""
     if xml_file:
@@ -440,6 +460,16 @@ def run_ibkr_sync(xml_file=None, dry_run=False, rebuild_html=True, sync_cloud=Fa
     changed_docs = []
     pos_changes = []
 
+    # 0. 预先合并成交，按 IBKR 持仓页口径（含佣金的移动加权均价）计算持仓成本，保证与 IBKR 软件一致
+    _fl_path = os.path.join(DB_DIR, "macro", "fillsLog.json")
+    _pre_fills = []
+    if os.path.isfile(_fl_path):
+        with open(_fl_path, "r", encoding="utf-8") as _f:
+            _pre_fills = list(json.load(_f).get("fills") or [])
+    _pre_ids = {x.get("id") for x in _pre_fills if x.get("id")}
+    _pre_fills += [t for t in new_trades if t["id"] not in _pre_ids]
+    ib_avg = compute_ib_avg_costs(_pre_fills)
+
     # 1. 更新 db/tickers/*.json 的 position
     tickers_dir = os.path.join(DB_DIR, "tickers")
     if has_open_pos and os.path.isdir(tickers_dir):
@@ -456,7 +486,14 @@ def run_ibkr_sync(xml_file=None, dry_run=False, rebuild_html=True, sync_cloud=Fa
                 p_new = pos_map[sym]
                 merged_pos = dict(old_pos)
                 merged_pos["shares"] = p_new["shares"]
-                merged_pos["avgCost"] = p_new["avgCost"]
+                _ib = ib_avg.get(sym)
+                if _ib and abs(_ib["shares"] - p_new["shares"]) < 1e-6 and _ib["avg"] > 0:
+                    merged_pos["avgCost"] = round(_ib["avg"], 8)
+                    merged_pos["avgCostSrc"] = "IBKR 持仓均价（移动加权，含佣金，与 IBKR 软件一致）"
+                    merged_pos["avgCostFifo"] = p_new["avgCost"]
+                else:
+                    merged_pos["avgCost"] = p_new["avgCost"]
+                    merged_pos["avgCostSrc"] = "IBKR Flex 批次均价（成交档案未对平，沿用 Flex）"
                 merged_pos["marketPrice"] = p_new["marketPrice"]
                 if p_new["weightPct"] is not None:
                     merged_pos["weightPct"] = p_new["weightPct"]
