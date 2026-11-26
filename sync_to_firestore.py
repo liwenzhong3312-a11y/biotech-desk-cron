@@ -22,6 +22,25 @@ DATABASE_ID = "(default)"
 COLLECTIONS = ("tickers", "macro", "benchlib", "mktlib", "prices", "glossary", "proposals")
 PULL_COLLECTIONS = COLLECTIONS
 IS_CI = os.environ.get("GITHUB_ACTIONS") == "true"
+_CACHED_TOKEN = ""
+
+
+def _exchange_oauth_refresh(client_id, client_secret, refresh_token):
+    """纯 Python 标准库直接向 Google OAuth2 端点刷新 access_token（0.3s 零依赖）。"""
+    _ensure_proxy()
+    data = urllib.parse.urlencode({
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token",
+    }).encode("utf-8")
+    req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data, method="POST")
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    tok = payload.get("access_token") or ""
+    if not tok:
+        raise RuntimeError("OAuth2 刷新响应未包含 access_token")
+    return tok
 
 
 def _local_proxy_open(host="127.0.0.1", port=20808):
@@ -64,9 +83,20 @@ def _ensure_ci_firebase_config():
 
 
 def get_firebase_token():
+    global _CACHED_TOKEN
+    if _CACHED_TOKEN:
+        return _CACHED_TOKEN
+    oauth_raw = (os.environ.get("FIREBASE_OAUTH_JSON") or "").strip()
+    if oauth_raw:
+        cred = json.loads(oauth_raw)
+        _CACHED_TOKEN = _exchange_oauth_refresh(
+            cred["client_id"], cred["client_secret"], cred["refresh_token"]
+        )
+        return _CACHED_TOKEN
+
     cfg_path = _ensure_ci_firebase_config()
     if not os.path.isfile(cfg_path):
-        raise RuntimeError("未找到 Firebase CLI 配置，请先运行 firebase login 或配置 FIREBASE_REFRESH_TOKEN")
+        raise RuntimeError("未找到 Firebase CLI 配置，请先运行 firebase login 或配置 FIREBASE_OAUTH_JSON")
     with open(cfg_path, "r", encoding="utf-8") as f:
         cfg = json.load(f)
     tokens = cfg.get("tokens") or {}
@@ -75,11 +105,21 @@ def get_firebase_token():
         if tokens.get("refresh_token"):
             return refresh_firebase_token()
         raise RuntimeError("未找到 Firebase CLI access_token，请先运行 firebase login")
+    _CACHED_TOKEN = tok
     return tok
 
 
 def refresh_firebase_token():
-    """调用 firebase-tools CLI 刷新过期 access_token，并重新读取。"""
+    """刷新过期 access_token：优先纯 Python OAuth2，回退本地 firebase-tools CLI。"""
+    global _CACHED_TOKEN
+    oauth_raw = (os.environ.get("FIREBASE_OAUTH_JSON") or "").strip()
+    if oauth_raw:
+        cred = json.loads(oauth_raw)
+        _CACHED_TOKEN = _exchange_oauth_refresh(
+            cred["client_id"], cred["client_secret"], cred["refresh_token"]
+        )
+        return _CACHED_TOKEN
+
     _ensure_proxy()
     _ensure_ci_firebase_config()
     npx_cmd = "npx.cmd" if os.name == "nt" else "npx"
@@ -100,6 +140,7 @@ def refresh_firebase_token():
     tok = (cfg.get("tokens") or {}).get("access_token")
     if not tok:
         raise RuntimeError("Firebase CLI 刷新后仍未获得 access_token")
+    _CACHED_TOKEN = tok
     return tok
 
 
