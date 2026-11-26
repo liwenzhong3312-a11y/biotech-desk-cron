@@ -69,6 +69,20 @@ def fetch_url(url, headers=None, timeout=15):
 def fetch_json(url, headers=None, timeout=15):
     return json.loads(fetch_url(url, headers=headers, timeout=timeout))
 
+def bars_to_price_doc(sym, bars, updated_ms=None):
+    """同时输出 bars 与前端 taSignals/lastPrice/drawSpark 所需的 time/open/high/low/close/volume 数组"""
+    return {
+        "sym": sym,
+        "bars": bars,
+        "time": [b["t"] for b in bars],
+        "open": [b["o"] for b in bars],
+        "high": [b["h"] for b in bars],
+        "low": [b["l"] for b in bars],
+        "close": [b["c"] for b in bars],
+        "volume": [b["v"] for b in bars],
+        "updatedAt": updated_ms if updated_ms is not None else int(time.time() * 1000),
+    }
+
 def fetch_price_bars(symbol):
     """从 Yahoo Finance / Stooq 拉取最近 1 年日线"""
     try:
@@ -396,7 +410,7 @@ def run_monitor(dry_run=False, pull_cloud=False, sync_cloud=False, no_html=False
             if not dry_run:
                 backup_file(p_path, "prices", sym)
                 with open(p_path, "w", encoding="utf-8") as f:
-                    json.dump({"sym": sym, "bars": new_bars, "updatedAt": int(time.time() * 1000)}, f, ensure_ascii=False, indent=2)
+                    json.dump(bars_to_price_doc(sym, new_bars), f, ensure_ascii=False, indent=2)
         else:
             if not IS_CI:
                 print(f"  - {sym:5s}: 保持现有本地缓存 (最新交易日 {old_last})")
@@ -435,6 +449,8 @@ def run_monitor(dry_run=False, pull_cloud=False, sync_cloud=False, no_html=False
         if sym in px_updated:
             _, new_last, last_close = px_updated[sym]
             t_doc["spot"] = str(last_close)
+            t_doc.setdefault("valuation", {})["price"] = last_close
+            t_doc["valuation"]["priceDate"] = new_last
             fetched["px"] = today_iso
             p_path = os.path.join(prices_dir, f"{sym}.json")
             if os.path.exists(p_path):
